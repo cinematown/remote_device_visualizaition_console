@@ -49,6 +49,7 @@ void NetworkWorker::ensure_socket()
             QString("%1:%2").arg(socket_->peerAddress().toString()).arg(socket_->peerPort());
         emit connected(endpoint);
         emit statusMessageChanged(QString("Connected to %1").arg(endpoint));
+        socket_->write("HELLO role=viewer\n");
     });
 
     connect(socket_, &QTcpSocket::disconnected, this, [this]() {
@@ -87,6 +88,11 @@ void NetworkWorker::consume_status_lines()
 
         const auto line = receive_buffer_.substr(0, newline + 1);
         receive_buffer_.erase(0, newline + 1);
+
+        if (line.starts_with("METRICS ")) {
+            emit metricsReceived(QString::fromStdString(line));
+            continue;
+        }
 
         if (const auto status = parse_status_line(line)) {
             emit statusReceived(*status);

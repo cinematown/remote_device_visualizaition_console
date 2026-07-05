@@ -27,6 +27,7 @@ signals:
     void disconnected();
     void statusMessageChanged(const QString& message);
     void statusReceived(const rdvc::DeviceStatus& status);
+    void metricsReceived(const QString& metricsLine);
     void errorOccurred(const QString& message);
 
 private:

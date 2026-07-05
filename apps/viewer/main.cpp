@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -18,6 +19,24 @@ namespace rdvc {
 
 constexpr auto kServerHost = "127.0.0.1";
 constexpr quint16 kServerPort = 5000;
+
+QString metric_value(const QString& metrics_line, const QString& key)
+{
+    const auto tokens = metrics_line.simplified().split(' ');
+    const auto prefix = key + "=";
+    for (const auto& token : tokens) {
+        if (token.startsWith(prefix)) {
+            return token.mid(prefix.size());
+        }
+    }
+
+    return "0";
+}
+
+void set_metric_label(QLabel& label, const QString& name, const QString& value)
+{
+    label.setText(QString("%1: %2").arg(name, value));
+}
 
 void set_device_row(QStandardItemModel& model, const DeviceStatus& status)
 {
@@ -75,6 +94,21 @@ int main(int argc, char* argv[])
 
     auto* viewport = new rdvc::DeviceViewportWidget;
 
+    auto* active_metric = new QLabel("Active: 0");
+    auto* msg_rate_metric = new QLabel("Msg/s: 0");
+    auto* devices_metric = new QLabel("Devices: 0");
+    auto* received_metric = new QLabel("Received: 0");
+    auto* ack_metric = new QLabel("ACK: 0");
+    auto* errors_metric = new QLabel("Errors: 0");
+
+    auto* metrics_grid = new QGridLayout;
+    metrics_grid->addWidget(active_metric, 0, 0);
+    metrics_grid->addWidget(msg_rate_metric, 0, 1);
+    metrics_grid->addWidget(devices_metric, 0, 2);
+    metrics_grid->addWidget(received_metric, 1, 0);
+    metrics_grid->addWidget(ack_metric, 1, 1);
+    metrics_grid->addWidget(errors_metric, 1, 2);
+
     auto* top_bar = new QHBoxLayout;
     top_bar->addWidget(connect_button);
     top_bar->addWidget(status_label);
@@ -82,6 +116,7 @@ int main(int argc, char* argv[])
 
     auto* root_layout = new QVBoxLayout;
     root_layout->addLayout(top_bar);
+    root_layout->addLayout(metrics_grid);
     root_layout->addWidget(table);
     root_layout->addWidget(viewport);
     window.setLayout(root_layout);
@@ -127,6 +162,18 @@ int main(int argc, char* argv[])
     QObject::connect(network_worker, &rdvc::NetworkWorker::statusReceived, [&](const rdvc::DeviceStatus& status) {
         rdvc::set_device_row(*model, status);
         viewport->upsertDevice(status);
+    });
+
+    QObject::connect(network_worker, &rdvc::NetworkWorker::metricsReceived, [&](const QString& metrics_line) {
+        rdvc::set_metric_label(*active_metric, "Active", rdvc::metric_value(metrics_line, "active"));
+        rdvc::set_metric_label(*msg_rate_metric, "Msg/s", rdvc::metric_value(metrics_line, "msg_per_sec"));
+        rdvc::set_metric_label(*devices_metric, "Devices", rdvc::metric_value(metrics_line, "devices"));
+        rdvc::set_metric_label(*received_metric, "Received", rdvc::metric_value(metrics_line, "received"));
+        rdvc::set_metric_label(*ack_metric, "ACK", rdvc::metric_value(metrics_line, "ack_sent"));
+
+        const auto parse_errors = rdvc::metric_value(metrics_line, "parse_errors").toULongLong();
+        const auto broadcast_errors = rdvc::metric_value(metrics_line, "broadcast_errors").toULongLong();
+        rdvc::set_metric_label(*errors_metric, "Errors", QString::number(parse_errors + broadcast_errors));
     });
 
     QObject::connect(network_thread, &QThread::finished, network_worker, &QObject::deleteLater);

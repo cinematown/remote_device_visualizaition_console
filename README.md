@@ -660,3 +660,54 @@ Expected result:
 
 - `rdvc_loadgen` prints client-side RTT latency p50/p95/p99.
 - `rdvc_server` prints server-side connection and throughput metrics once per second.
+
+
+## Phase 15 - Viewer Performance Dashboard
+
+Goal:
+
+- Stream server-side metrics to the Qt viewer.
+- Show a compact dashboard above the device table.
+- Keep load generator latency percentiles in `rdvc_loadgen`.
+
+Protocol addition:
+
+```text
+HELLO role=viewer
+```
+
+Server metrics stream:
+
+```text
+METRICS uptime_sec=10 active=100 accepted=100 disconnected=0 devices=100 received=9200 ack_sent=9200 parse_errors=0 broadcast_errors=0 msg_per_sec=997
+```
+
+Build:
+
+```bash
+cmake -S . -B build
+cmake --build build
+```
+
+Run server in terminal 1:
+
+```bash
+./build/rdvc_server
+```
+
+Run viewer from the Ubuntu desktop session:
+
+```bash
+./build/rdvc_viewer
+```
+
+Run load generator in terminal 2:
+
+```bash
+./build/rdvc_loadgen --connections 100 --rate 1000 --duration 10
+```
+
+Expected result:
+
+- The viewer dashboard updates `Active`, `Msg/s`, `Devices`, `Received`, `ACK`, and `Errors`.
+- Load generator sockets receive ACK lines only; dashboard metrics are sent only to registered viewer clients.
