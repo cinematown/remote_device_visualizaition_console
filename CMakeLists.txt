@@ -53,6 +53,10 @@ endif()
 add_executable(rdvc_simulator apps/simulator/main.cpp)
 rdvc_configure_target(rdvc_simulator)
 
+
+add_executable(rdvc_loadgen apps/loadgen/main.cpp)
+rdvc_configure_target(rdvc_loadgen)
+
 add_executable(rdvc_viewer
     apps/viewer/main.cpp
     apps/viewer/device_viewport_widget.cpp

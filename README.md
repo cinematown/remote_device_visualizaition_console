@@ -527,3 +527,51 @@ Expected simulator output includes:
 Sent: STATUS device_id=sim-001 state=OK battery=87 x=10 y=0 z=0 seq=1 sent_ms=... ack=1
 Received: ACK device_id=sim-001 seq=1 server_ms=...
 ```
+
+
+## Phase 12 - Load Generator v1
+
+Goal:
+
+- Add a dedicated load generator executable.
+- Open many non-blocking TCP connections from one process.
+- Send one ACK-requesting `STATUS` message per connection.
+- Report basic latency and throughput numbers.
+
+Build:
+
+```bash
+cmake -S . -B build
+cmake --build build
+```
+
+Run server in terminal 1:
+
+```bash
+./build/rdvc_server
+```
+
+Run load generator in terminal 2:
+
+```bash
+./build/rdvc_loadgen --connections 100
+```
+
+Expected output shape:
+
+```text
+connections: 100
+acked: 100
+errors: 0
+elapsed_ms: ...
+throughput_ack_per_sec: ...
+latency_ms_p50: ...
+latency_ms_p95: ...
+latency_ms_p99: ...
+```
+
+Notes:
+
+- v1 measures one ACK round trip per connection.
+- Rate-controlled, duration-based traffic is intentionally left for the next
+  load generator phase.

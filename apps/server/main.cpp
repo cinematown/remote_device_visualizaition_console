@@ -368,10 +368,11 @@ void run_event_loop(int epoll_fd, int listen_fd, MqttBridge& mqtt_bridge)
                 if (status.has_value()) {
                     if (status->ack_requested) {
                         send_ack(fd, *status);
+                    } else {
+                        broadcast_status_line(telemetry_client_fds, fd, *line);
                     }
                     mqtt_bridge.publish_status(*status);
                 }
-                broadcast_status_line(telemetry_client_fds, fd, *line);
             }
 
             if (!still_connected) {
