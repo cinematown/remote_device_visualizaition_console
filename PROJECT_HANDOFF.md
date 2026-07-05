@@ -1,0 +1,318 @@
+# Project Handoff
+
+## Current Direction
+
+`C++ Remote Device Visualization Console` is now focused on remote device observability:
+
+- epoll-based C++ telemetry server
+- device simulator
+- high-concurrency load generator
+- Qt Widgets viewer
+- OpenGL-based fleet viewport
+- server metrics dashboard
+- optional MQTT bridge
+
+The project direction changed from a generic device visualization roadmap to a fleet observability console. VTK is no longer the main next step. It remains an optional future extension for industrial 3D asset/model viewing.
+
+## Important Decisions
+
+- TLS/OpenSSL transport is delayed.
+- REST API Phase 9 was removed by user request.
+- MQTT bridge was preserved.
+- VTK is optional, not the primary visualization path.
+- Main focus is now:
+  - load generation
+  - server throughput/connection metrics
+  - Qt performance dashboard
+  - fleet map / observability UI
+  - possible replay/time-machine mode later
+- Client-observed latency percentiles belong in `rdvc_loadgen`.
+- Server metrics should focus on server-side facts: active connections, throughput, ACK count, parse errors, stored devices.
+
+## Current Components
+
+### server
+
+Path: `apps/server/main.cpp`
+
+Current responsibilities:
+
+- TCP listen on `127.0.0.1:5000`
+- non-blocking sockets
+- epoll event loop
+- accepts simulator, viewer, and loadgen connections
+- parses `STATUS` lines through `libs/protocol`
+- stores latest device state in `DeviceStatusStore`
+- sends `ACK` for `ack=1` messages
+- broadcasts normal device `STATUS` lines to registered viewer clients
+- streams `METRICS` lines to registered viewer clients
+- publishes status to MQTT when built with `libmosquitto`
+
+Viewer clients register by sending:
+
+```text
+HELLO role=viewer
+```
+
+### simulator
+
+Path: `apps/simulator/main.cpp`
+
+Single-device smoke test client.
+
+Example:
+
+```bash
+./build/rdvc_simulator sim-001 10 0 0
+./build/rdvc_simulator sim-001 10 0 0 --ack
+```
+
+### loadgen
+
+Path: `apps/loadgen/main.cpp`
+
+Current load generator version:
+
+- non-blocking TCP clients
+- epoll-based
+- supports repeated traffic over persistent connections
+- measures client-observed ACK RTT latency
+- prints p50/p95/p99 latency
+
+Example:
+
+```bash
+./build/rdvc_loadgen --connections 100 --rate 1000 --duration 10
+```
+
+Metrics produced by loadgen:
+
+- connections
+- target_rate_per_sec
+- duration_sec
+- sent
+- acked
+- errors
+- elapsed_ms
+- traffic_ms
+- throughput_ack_per_sec
+- latency_ms_p50
+- latency_ms_p95
+- latency_ms_p99
+
+### viewer
+
+Paths:
+
+- `apps/viewer/main.cpp`
+- `apps/viewer/network_worker.hpp`
+- `apps/viewer/network_worker.cpp`
+- `apps/viewer/device_viewport_widget.hpp`
+- `apps/viewer/device_viewport_widget.cpp`
+
+Current viewer features:
+
+- Qt Widgets app
+- `QThread` + `NetworkWorker` for socket work
+- sends `HELLO role=viewer` after connecting
+- parses `STATUS` lines into device table
+- displays device markers in a `QOpenGLWidget` viewport
+- parses `METRICS` lines and updates dashboard labels
+
+Dashboard fields:
+
+- Active
+- Msg/s
+- Devices
+- Received
+- ACK
+- Errors
+
+### protocol
+
+Paths:
+
+- `libs/protocol/include/rdvc/protocol/device_status.hpp`
+- `libs/protocol/include/rdvc/protocol/status_parser.hpp`
+- `libs/protocol/src/status_parser.cpp`
+
+Current `STATUS` format:
+
+```text
+STATUS device_id=<id> state=<state> battery=<percent> x=<x> y=<y> z=<z> seq=<n> sent_ms=<ms> ack=1
+```
+
+Fields `seq`, `sent_ms`, and `ack` are optional and mainly used by loadgen.
+
+Server ACK response:
+
+```text
+ACK device_id=<id> seq=<n> server_ms=<ms>
+```
+
+Server metrics stream:
+
+```text
+METRICS uptime_sec=<s> active=<n> accepted=<n> disconnected=<n> devices=<n> received=<n> ack_sent=<n> parse_errors=<n> broadcast_errors=<n> msg_per_sec=<n>
+```
+
+### common
+
+Paths:
+
+- `libs/common/include/rdvc/common/device_status_store.hpp`
+- `libs/common/src/device_status_store.cpp`
+
+Current responsibility:
+
+- store latest `DeviceStatus` per `device_id`
+- lookup by `device_id`
+- report store size
+
+REST-only `all()` was removed when REST Phase 9 was reverted.
+
+### MQTT
+
+Paths:
+
+- `apps/server/mqtt_bridge.hpp`
+- `apps/server/mqtt_bridge.cpp`
+
+Current behavior:
+
+- optional compile depending on `libmosquitto`
+- CMake defines `RDVC_HAS_MQTT=1` when available
+- publishes status to:
+
+```text
+devices/{id}/status
+```
+
+- subscribes to:
+
+```text
+devices/+/commands/reset
+```
+
+Current MQTT command handling is a placeholder log only.
+
+## Phase History Summary
+
+Completed major phases:
+
+- Phase 0: C++20/CMake environment
+- Phase 1: project layout and hello targets
+- Phase 2: first TCP STATUS line
+- Phase 3: protocol parser and `DeviceStatus`
+- Phase 4: non-blocking epoll server
+- Phase 5: `DeviceStatusStore`
+- Phase 6: minimal Qt Widgets viewer
+- Phase 7: Qt network worker thread
+- Phase 8: OpenGL viewport with x/y/z device markers
+- Phase 9: REST API was added, then removed by user request
+- Phase 10: optional MQTT bridge
+- Phase 11: ACK protocol for load testing
+- Phase 12: load generator v1
+- Phase 13: load generator v2 with `--rate` and `--duration`
+- Phase 14: server metrics stdout reporting
+- Phase 15: viewer performance dashboard
+
+## Current Build Commands
+
+```bash
+cd /home/ryusungwu/share/remote-device-visualization-console
+cmake -S . -B build
+cmake --build build
+```
+
+If Qt cannot be found after moving paths, use the local Qt prefix:
+
+```bash
+cmake -S . -B build -DCMAKE_PREFIX_PATH=$HOME/Qt/6.11.1/gcc_64
+cmake --build build
+```
+
+## Current Run Commands
+
+Server:
+
+```bash
+./build/rdvc_server
+```
+
+Viewer:
+
+```bash
+./build/rdvc_viewer
+```
+
+Simulator:
+
+```bash
+./build/rdvc_simulator sim-001 10 0 0
+./build/rdvc_simulator sim-001 10 0 0 --ack
+```
+
+Load generator:
+
+```bash
+./build/rdvc_loadgen --connections 100 --rate 1000 --duration 10
+```
+
+MQTT optional setup:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libmosquitto-dev mosquitto mosquitto-clients
+```
+
+Broker/subscriber examples:
+
+```bash
+mosquitto -v
+mosquitto_sub -h 127.0.0.1 -t 'devices/+/status'
+```
+
+## Next Suggested Phase
+
+Recommended next step: improve the viewer observability UI.
+
+Possible Phase 16 options:
+
+1. Time-series dashboard chart
+   - show `msg_per_sec` over time
+   - show `active` connections over time
+   - keep simple with custom `QWidget`/`QPainter` first
+
+2. Fleet map improvements
+   - make viewport more useful for many devices
+   - color/size markers based on state or update age
+   - add simple pan/zoom or auto-fit
+
+3. Server metrics stream cleanup
+   - introduce a tiny metrics parser/shared type
+   - avoid ad hoc key-value parsing in viewer
+   - possibly move metrics protocol into `libs/protocol`
+
+4. Replay/time-machine foundation
+   - persist STATUS/METRICS stream to log
+   - replay later in viewer
+
+Best immediate next phase:
+
+```text
+Phase 16 - Viewer Time-Series Metrics Chart
+```
+
+Reason: server already streams metrics and viewer already receives them. A small chart makes the observability direction visible without introducing new infrastructure.
+
+## Notes for Next Context
+
+- Before editing, read this file first.
+- Keep changes small and phase-based.
+- Do not reintroduce REST unless explicitly requested.
+- Do not make VTK the next main phase unless the user changes direction.
+- Preserve loadgen/server metric role separation:
+  - loadgen owns RTT p50/p95/p99
+  - server owns active/throughput/error/store metrics
+- Continue adding concise comments around new implementation blocks explaining what/why.
