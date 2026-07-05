@@ -26,23 +26,28 @@ namespace {
 constexpr std::string_view kDefaultHost = "127.0.0.1";
 constexpr int kDefaultPort = 5000;
 constexpr int kDefaultConnections = 100;
-constexpr int kMaxEvents = 128;
+constexpr int kDefaultRatePerSecond = 100;
+constexpr int kDefaultDurationSeconds = 10;
+constexpr int kMaxEvents = 256;
 
 struct Options {
     std::string host = std::string(kDefaultHost);
     int port = kDefaultPort;
     int connections = kDefaultConnections;
+    int rate_per_second = kDefaultRatePerSecond;
+    int duration_seconds = kDefaultDurationSeconds;
 };
 
 enum class ClientPhase {
     Connecting,
+    Ready,
     WaitingAck,
 };
 
 struct ClientState {
     int fd = -1;
     int index = 0;
-    std::uint64_t sequence = 1;
+    std::uint64_t sequence = 0;
     std::uint64_t sent_ms = 0;
     std::string receive_buffer;
     ClientPhase phase = ClientPhase::Connecting;
@@ -74,6 +79,10 @@ Options parse_options(int argc, char* argv[])
             options.port = std::stoi(std::string(require_value(arg)));
         } else if (arg == "--connections") {
             options.connections = std::stoi(std::string(require_value(arg)));
+        } else if (arg == "--rate") {
+            options.rate_per_second = std::stoi(std::string(require_value(arg)));
+        } else if (arg == "--duration") {
+            options.duration_seconds = std::stoi(std::string(require_value(arg)));
         } else {
             throw std::runtime_error("unknown option: " + std::string(arg));
         }
@@ -81,6 +90,12 @@ Options parse_options(int argc, char* argv[])
 
     if (options.connections <= 0) {
         throw std::runtime_error("--connections must be positive");
+    }
+    if (options.rate_per_second <= 0) {
+        throw std::runtime_error("--rate must be positive");
+    }
+    if (options.duration_seconds <= 0) {
+        throw std::runtime_error("--duration must be positive");
     }
 
     return options;
@@ -127,9 +142,7 @@ void close_client(int epoll_fd, std::unordered_map<int, ClientState>& clients, i
 
 std::string device_id_for(int index)
 {
-    std::string id = "load-";
-    id += std::to_string(index);
-    return id;
+    return "load-" + std::to_string(index);
 }
 
 std::string make_status_line(const ClientState& client)
@@ -208,19 +221,21 @@ bool finish_connect(int fd)
 
 bool send_status(ClientState& client)
 {
+    ++client.sequence;
     client.sent_ms = now_ms();
     const auto status_line = make_status_line(client);
     const ssize_t sent = ::send(client.fd, status_line.data(), status_line.size(), MSG_NOSIGNAL);
 
     if (sent < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            --client.sequence;
             return false;
         }
         throw std::runtime_error(std::strerror(errno));
     }
 
     if (static_cast<std::size_t>(sent) != status_line.size()) {
-        throw std::runtime_error("partial send is not handled in loadgen v1");
+        throw std::runtime_error("partial send is not handled in loadgen v2");
     }
 
     client.phase = ClientPhase::WaitingAck;
@@ -236,6 +251,7 @@ std::optional<std::uint64_t> receive_ack(ClientState& client)
         if (received > 0) {
             client.receive_buffer.append(buffer.data(), static_cast<std::size_t>(received));
             if (has_ack_line(client.receive_buffer)) {
+                client.phase = ClientPhase::Ready;
                 return now_ms() - client.sent_ms;
             }
             continue;
@@ -267,17 +283,24 @@ std::uint64_t percentile(std::vector<std::uint64_t> values, double ratio)
 void print_summary(
     const Options& options,
     std::uint64_t started_ms,
+    std::uint64_t connected_ms,
+    int sent,
     const std::vector<std::uint64_t>& latencies,
     int errors)
 {
     const auto elapsed_ms = std::max<std::uint64_t>(1, now_ms() - started_ms);
+    const auto traffic_ms = std::max<std::uint64_t>(1, now_ms() - connected_ms);
     const double throughput = static_cast<double>(latencies.size()) * 1000.0
-        / static_cast<double>(elapsed_ms);
+        / static_cast<double>(traffic_ms);
 
     std::cout << "connections: " << options.connections << '\n';
+    std::cout << "target_rate_per_sec: " << options.rate_per_second << '\n';
+    std::cout << "duration_sec: " << options.duration_seconds << '\n';
+    std::cout << "sent: " << sent << '\n';
     std::cout << "acked: " << latencies.size() << '\n';
     std::cout << "errors: " << errors << '\n';
     std::cout << "elapsed_ms: " << elapsed_ms << '\n';
+    std::cout << "traffic_ms: " << traffic_ms << '\n';
     std::cout << "throughput_ack_per_sec: " << std::fixed << std::setprecision(1)
               << throughput << '\n';
     std::cout << "latency_ms_p50: " << percentile(latencies, 0.50) << '\n';
@@ -285,16 +308,12 @@ void print_summary(
     std::cout << "latency_ms_p99: " << percentile(latencies, 0.99) << '\n';
 }
 
-int run_loadgen(const Options& options)
+void connect_clients(
+    const Options& options,
+    int epoll_fd,
+    std::unordered_map<int, ClientState>& clients,
+    int& errors)
 {
-    const int epoll_fd = create_epoll();
-    std::unordered_map<int, ClientState> clients;
-    std::vector<std::uint64_t> latencies;
-    latencies.reserve(static_cast<std::size_t>(options.connections));
-    int errors = 0;
-
-    const auto started_ms = now_ms();
-
     for (int index = 0; index < options.connections; ++index) {
         const int fd = start_connect(options);
         ClientState client{};
@@ -306,22 +325,21 @@ int run_loadgen(const Options& options)
 
     std::array<epoll_event, kMaxEvents> events{};
     while (!clients.empty()) {
-        const int event_count = ::epoll_wait(epoll_fd, events.data(), events.size(), 5000);
-        if (event_count < 0) {
-            if (errno == EINTR) {
-                continue;
+        bool all_ready = true;
+        for (const auto& [fd, client] : clients) {
+            if (client.phase != ClientPhase::Ready) {
+                all_ready = false;
+                break;
             }
-            throw std::runtime_error(std::strerror(errno));
+        }
+        if (all_ready) {
+            return;
         }
 
-        if (event_count == 0) {
+        const int event_count = ::epoll_wait(epoll_fd, events.data(), events.size(), 5000);
+        if (event_count <= 0) {
             errors += static_cast<int>(clients.size());
-            for (auto iterator = clients.begin(); iterator != clients.end();) {
-                const int fd = iterator->first;
-                ++iterator;
-                close_client(epoll_fd, clients, fd);
-            }
-            break;
+            return;
         }
 
         for (int event_index = 0; event_index < event_count; ++event_index) {
@@ -342,28 +360,103 @@ int run_loadgen(const Options& options)
                     if (!finish_connect(fd)) {
                         throw std::runtime_error("connect failed");
                     }
+                    client.phase = ClientPhase::Ready;
+                    update_epoll(epoll_fd, fd, EPOLLIN | EPOLLERR | EPOLLHUP, EPOLL_CTL_MOD);
+                }
+            } catch (const std::exception&) {
+                ++errors;
+                close_client(epoll_fd, clients, fd);
+            }
+        }
+    }
+}
 
-                    if (send_status(client)) {
-                        update_epoll(epoll_fd, fd, EPOLLIN | EPOLLERR | EPOLLHUP, EPOLL_CTL_MOD);
-                    }
-                    continue;
+int run_loadgen(const Options& options)
+{
+    const int epoll_fd = create_epoll();
+    std::unordered_map<int, ClientState> clients;
+    std::vector<std::uint64_t> latencies;
+    latencies.reserve(static_cast<std::size_t>(options.rate_per_second * options.duration_seconds));
+    int errors = 0;
+    int sent = 0;
+
+    const auto started_ms = now_ms();
+    connect_clients(options, epoll_fd, clients, errors);
+    const auto connected_ms = now_ms();
+
+    const auto test_end_ms = connected_ms
+        + static_cast<std::uint64_t>(options.duration_seconds) * 1000;
+    std::size_t next_client_index = 0;
+    double send_credit = 0.0;
+    std::uint64_t last_tick_ms = connected_ms;
+
+    std::array<epoll_event, kMaxEvents> events{};
+    while (now_ms() < test_end_ms || latencies.size() < static_cast<std::size_t>(sent)) {
+        const auto current_ms = now_ms();
+        const auto delta_ms = current_ms - last_tick_ms;
+        last_tick_ms = current_ms;
+
+        if (current_ms < test_end_ms) {
+            send_credit += static_cast<double>(options.rate_per_second)
+                * static_cast<double>(delta_ms) / 1000.0;
+        }
+
+        while (send_credit >= 1.0 && !clients.empty() && current_ms < test_end_ms) {
+            auto iterator = clients.begin();
+            std::advance(iterator, static_cast<long>(next_client_index % clients.size()));
+            auto& client = iterator->second;
+
+            if (client.phase == ClientPhase::Ready && send_status(client)) {
+                ++sent;
+                send_credit -= 1.0;
+            } else {
+                break;
+            }
+            ++next_client_index;
+        }
+
+        const int event_count = ::epoll_wait(epoll_fd, events.data(), events.size(), 10);
+        if (event_count < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            throw std::runtime_error(std::strerror(errno));
+        }
+
+        for (int event_index = 0; event_index < event_count; ++event_index) {
+            const int fd = events[static_cast<std::size_t>(event_index)].data.fd;
+            auto found = clients.find(fd);
+            if (found == clients.end()) {
+                continue;
+            }
+
+            try {
+                auto& client = found->second;
+                const auto flags = events[static_cast<std::size_t>(event_index)].events;
+                if ((flags & (EPOLLERR | EPOLLHUP)) != 0) {
+                    throw std::runtime_error("socket error event");
                 }
 
                 if (client.phase == ClientPhase::WaitingAck && (flags & EPOLLIN) != 0) {
                     if (auto latency = receive_ack(client)) {
                         latencies.push_back(*latency);
-                        close_client(epoll_fd, clients, fd);
                     }
                 }
-            } catch (const std::exception& error) {
+            } catch (const std::exception&) {
                 ++errors;
                 close_client(epoll_fd, clients, fd);
             }
         }
     }
 
+    for (auto iterator = clients.begin(); iterator != clients.end();) {
+        const int fd = iterator->first;
+        ++iterator;
+        close_client(epoll_fd, clients, fd);
+    }
     ::close(epoll_fd);
-    print_summary(options, started_ms, latencies, errors);
+
+    print_summary(options, started_ms, connected_ms, sent, latencies, errors);
     return errors == 0 ? 0 : 1;
 }
 
@@ -378,7 +471,7 @@ int main(int argc, char* argv[])
     } catch (const std::exception& error) {
         std::cerr << "loadgen error: " << error.what() << '\n';
         std::cerr << "usage: rdvc_loadgen [--host 127.0.0.1] [--port 5000] "
-                  << "[--connections 100]\n";
+                  << "[--connections 100] [--rate 100] [--duration 10]\n";
         return 1;
     }
 }

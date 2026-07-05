@@ -575,3 +575,88 @@ Notes:
 - v1 measures one ACK round trip per connection.
 - Rate-controlled, duration-based traffic is intentionally left for the next
   load generator phase.
+
+
+## Phase 13 - Load Generator v2
+
+Goal:
+
+- Keep TCP connections open during the test.
+- Send repeated ACK-requesting `STATUS` messages.
+- Separate connection count, target message rate, and duration.
+- Reduce server per-message logging for ACK load-test traffic.
+
+Build:
+
+```bash
+cmake -S . -B build
+cmake --build build
+```
+
+Run server in terminal 1:
+
+```bash
+./build/rdvc_server
+```
+
+Run load generator in terminal 2:
+
+```bash
+./build/rdvc_loadgen --connections 100 --rate 1000 --duration 10
+```
+
+Expected output shape:
+
+```text
+connections: 100
+target_rate_per_sec: 1000
+duration_sec: 10
+sent: ...
+acked: ...
+errors: 0
+elapsed_ms: ...
+traffic_ms: ...
+throughput_ack_per_sec: ...
+latency_ms_p50: ...
+latency_ms_p95: ...
+latency_ms_p99: ...
+```
+
+
+## Phase 14 - Server Metrics
+
+Goal:
+
+- Report server-side health and throughput while loadgen is running.
+- Keep client-observed latency percentiles in `rdvc_loadgen`.
+- Prepare metrics as the data source for a future viewer dashboard.
+
+Server metrics output:
+
+```text
+METRICS uptime_sec=10 active=100 accepted=100 disconnected=0 devices=100 received=9200 ack_sent=9200 parse_errors=0 broadcast_errors=0 msg_per_sec=997
+```
+
+Build:
+
+```bash
+cmake -S . -B build
+cmake --build build
+```
+
+Run server in terminal 1:
+
+```bash
+./build/rdvc_server
+```
+
+Run load generator in terminal 2:
+
+```bash
+./build/rdvc_loadgen --connections 100 --rate 1000 --duration 10
+```
+
+Expected result:
+
+- `rdvc_loadgen` prints client-side RTT latency p50/p95/p99.
+- `rdvc_server` prints server-side connection and throughput metrics once per second.

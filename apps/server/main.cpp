@@ -29,7 +29,8 @@ constexpr std::string_view kListenAddress = "127.0.0.1";
 constexpr int kListenPort = 5000;
 constexpr std::string_view kMqttHost = "127.0.0.1";
 constexpr int kMqttPort = 1883;
-constexpr int kMaxEvents = 32;
+constexpr int kMaxEvents = 128;
+constexpr int kListenBacklog = 1024;
 
 volatile std::sig_atomic_t g_should_stop = 0;
 
@@ -177,18 +178,31 @@ Socket create_listening_socket()
         throw std::runtime_error(std::strerror(errno));
     }
 
-    if (::listen(listen_socket.fd(), 8) < 0) {
+    if (::listen(listen_socket.fd(), kListenBacklog) < 0) {
         throw std::runtime_error(std::strerror(errno));
     }
 
     return listen_socket;
 }
 
+struct ServerMetrics {
+    std::uint64_t start_ms = 0;
+    std::uint64_t last_report_ms = 0;
+    std::uint64_t last_report_status_received = 0;
+    std::uint64_t total_accepted = 0;
+    std::uint64_t total_disconnected = 0;
+    std::uint64_t status_received = 0;
+    std::uint64_t ack_sent = 0;
+    std::uint64_t parse_errors = 0;
+    std::uint64_t broadcast_errors = 0;
+};
+
 void accept_ready_clients(
     int epoll_fd,
     int listen_fd,
     std::unordered_map<int, std::string>& client_buffers,
-    std::unordered_set<int>& telemetry_client_fds)
+    std::unordered_set<int>& telemetry_client_fds,
+    ServerMetrics& metrics)
 {
     while (true) {
         sockaddr_in client_address{};
@@ -209,6 +223,7 @@ void accept_ready_clients(
         add_epoll_fd(epoll_fd, client_fd);
         client_buffers.emplace(client_fd, std::string{});
         telemetry_client_fds.insert(client_fd);
+        ++metrics.total_accepted;
 
         std::array<char, INET_ADDRSTRLEN> client_ip{};
         const char* ip_text = ::inet_ntop(
@@ -261,7 +276,7 @@ std::uint64_t now_ms()
         std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
-void send_ack(int client_fd, const DeviceStatus& status)
+bool send_ack(int client_fd, const DeviceStatus& status)
 {
     // ACK is the minimal timing hook for the upcoming load generator: each
     // client can measure send-to-ACK round trip latency per sequence number.
@@ -277,37 +292,47 @@ void send_ack(int client_fd, const DeviceStatus& status)
     if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
         std::cerr << "ack send error for fd " << client_fd << ": "
                   << std::strerror(errno) << '\n';
+        return false;
     }
+
+    return sent >= 0;
 }
 
 std::optional<DeviceStatus> handle_status_line(
     std::string_view line,
-    DeviceStatusStore& status_store)
+    DeviceStatusStore& status_store,
+    ServerMetrics& metrics)
 {
-    std::cout << "Received: " << line;
-
     const auto status = parse_status_line(line);
     if (!status.has_value()) {
-        std::cerr << "Invalid STATUS line\n";
+        ++metrics.parse_errors;
+        std::cerr << "Invalid STATUS line: " << line;
         return std::nullopt;
     }
+
+    ++metrics.status_received;
 
     // Keep only the latest status per device. This is the in-memory source of
     // truth that later phases expose to the Qt viewer and MQTT bridge.
     status_store.upsert(*status);
 
-    std::cout << "Parsed device status: id=" << status->device_id
-              << " state=" << status->state
-              << " battery=" << status->battery_percent << " position=("
-              << status->x << ", " << status->y << ", " << status->z << ")\n";
-    std::cout << "Stored devices: " << status_store.size() << '\n';
+    if (!status->ack_requested) {
+        std::cout << "Received: " << line;
+        std::cout << "Parsed device status: id=" << status->device_id
+                  << " state=" << status->state
+                  << " battery=" << status->battery_percent << " position=("
+                  << status->x << ", " << status->y << ", " << status->z << ")\n";
+        std::cout << "Stored devices: " << status_store.size() << '\n';
+    }
+
     return status;
 }
 
 void broadcast_status_line(
     const std::unordered_set<int>& telemetry_client_fds,
     int source_fd,
-    std::string_view line)
+    std::string_view line,
+    ServerMetrics& metrics)
 {
     // Viewer clients reuse the same TCP server in this phase. Whenever a
     // simulator reports a status, the raw line is forwarded so the Qt worker
@@ -321,10 +346,43 @@ void broadcast_status_line(
             ::send(client_fd, line.data(), line.size(), MSG_NOSIGNAL);
 
         if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            ++metrics.broadcast_errors;
             std::cerr << "broadcast error for fd " << client_fd << ": "
                       << std::strerror(errno) << '\n';
         }
     }
+}
+
+void print_metrics_if_due(
+    ServerMetrics& metrics,
+    const std::unordered_set<int>& telemetry_client_fds,
+    const DeviceStatusStore& status_store)
+{
+    const auto current_ms = now_ms();
+    if (current_ms - metrics.last_report_ms < 1000) {
+        return;
+    }
+
+    const auto elapsed_ms = std::max<std::uint64_t>(1, current_ms - metrics.last_report_ms);
+    const auto messages_delta = metrics.status_received - metrics.last_report_status_received;
+    const auto msg_per_sec = static_cast<std::uint64_t>(
+        static_cast<double>(messages_delta) * 1000.0 / static_cast<double>(elapsed_ms));
+
+    // Server metrics are intentionally server-side: connection count and
+    // throughput live here, while client-observed p50/p99 stays in loadgen.
+    std::cout << "METRICS uptime_sec=" << (current_ms - metrics.start_ms) / 1000
+              << " active=" << telemetry_client_fds.size()
+              << " accepted=" << metrics.total_accepted
+              << " disconnected=" << metrics.total_disconnected
+              << " devices=" << status_store.size()
+              << " received=" << metrics.status_received
+              << " ack_sent=" << metrics.ack_sent
+              << " parse_errors=" << metrics.parse_errors
+              << " broadcast_errors=" << metrics.broadcast_errors
+              << " msg_per_sec=" << msg_per_sec << '\n';
+
+    metrics.last_report_ms = current_ms;
+    metrics.last_report_status_received = metrics.status_received;
 }
 
 void run_event_loop(int epoll_fd, int listen_fd, MqttBridge& mqtt_bridge)
@@ -332,6 +390,9 @@ void run_event_loop(int epoll_fd, int listen_fd, MqttBridge& mqtt_bridge)
     DeviceStatusStore status_store;
     std::unordered_map<int, std::string> client_buffers;
     std::unordered_set<int> telemetry_client_fds;
+    ServerMetrics metrics;
+    metrics.start_ms = now_ms();
+    metrics.last_report_ms = metrics.start_ms;
     std::array<epoll_event, kMaxEvents> events{};
 
     while (!g_should_stop) {
@@ -350,7 +411,7 @@ void run_event_loop(int epoll_fd, int listen_fd, MqttBridge& mqtt_bridge)
 
             if (fd == listen_fd) {
                 accept_ready_clients(
-                    epoll_fd, listen_fd, client_buffers, telemetry_client_fds);
+                    epoll_fd, listen_fd, client_buffers, telemetry_client_fds, metrics);
                 continue;
             }
 
@@ -364,12 +425,14 @@ void run_event_loop(int epoll_fd, int listen_fd, MqttBridge& mqtt_bridge)
             const bool still_connected = receive_available_data(fd, input_buffer);
 
             while (auto line = take_next_line(input_buffer)) {
-                const auto status = handle_status_line(*line, status_store);
+                const auto status = handle_status_line(*line, status_store, metrics);
                 if (status.has_value()) {
                     if (status->ack_requested) {
-                        send_ack(fd, *status);
+                        if (send_ack(fd, *status)) {
+                            ++metrics.ack_sent;
+                        }
                     } else {
-                        broadcast_status_line(telemetry_client_fds, fd, *line);
+                        broadcast_status_line(telemetry_client_fds, fd, *line, metrics);
                     }
                     mqtt_bridge.publish_status(*status);
                 }
@@ -379,9 +442,12 @@ void run_event_loop(int epoll_fd, int listen_fd, MqttBridge& mqtt_bridge)
                 std::cout << "Client disconnected: fd=" << fd << '\n';
                 client_buffers.erase(fd);
                 telemetry_client_fds.erase(fd);
+                ++metrics.total_disconnected;
                 remove_epoll_fd(epoll_fd, fd);
             }
         }
+
+        print_metrics_if_due(metrics, telemetry_client_fds, status_store);
     }
 }
 
