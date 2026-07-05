@@ -480,3 +480,50 @@ Optional command-topic smoke test:
 ```bash
 mosquitto_pub -h 127.0.0.1 -t devices/sim-001/commands/reset -m '{}'
 ```
+
+
+## Phase 11 - ACK Protocol for Load Testing
+
+Goal:
+
+- Add an optional ACK path for latency measurement.
+- Prepare the protocol for a high-concurrency load generator.
+- Keep existing simulator/viewer behavior compatible.
+
+Protocol extension:
+
+```text
+STATUS device_id=<id> state=<state> battery=<percent> x=<x> y=<y> z=<z> seq=<n> sent_ms=<ms> ack=1
+```
+
+Server response when `ack=1`:
+
+```text
+ACK device_id=<id> seq=<n> server_ms=<ms>
+```
+
+Build:
+
+```bash
+cmake -S . -B build
+cmake --build build
+```
+
+Run server in terminal 1:
+
+```bash
+./build/rdvc_server
+```
+
+Run ACK smoke test in terminal 2:
+
+```bash
+./build/rdvc_simulator sim-001 10 0 0 --ack
+```
+
+Expected simulator output includes:
+
+```text
+Sent: STATUS device_id=sim-001 state=OK battery=87 x=10 y=0 z=0 seq=1 sent_ms=... ack=1
+Received: ACK device_id=sim-001 seq=1 server_ms=...
+```

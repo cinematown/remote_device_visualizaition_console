@@ -1,4 +1,7 @@
+#include <array>
+#include <chrono>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -86,11 +89,19 @@ Socket connect_to_server()
     return socket;
 }
 
+std::uint64_t now_ms()
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
 std::string make_status_line(
     std::string_view device_id,
     std::string_view x,
     std::string_view y,
-    std::string_view z)
+    std::string_view z,
+    bool ack_requested)
 {
     std::string line = "STATUS device_id=";
     line += device_id;
@@ -100,8 +111,27 @@ std::string make_status_line(
     line += y;
     line += " z=";
     line += z;
+
+    if (ack_requested) {
+        line += " seq=1 sent_ms=";
+        line += std::to_string(now_ms());
+        line += " ack=1";
+    }
+
     line += '\n';
     return line;
+}
+
+void receive_ack_line(int socket_fd)
+{
+    std::array<char, 512> buffer{};
+    const ssize_t received = ::recv(socket_fd, buffer.data(), buffer.size() - 1, 0);
+    if (received < 0) {
+        throw std::runtime_error(std::strerror(errno));
+    }
+
+    std::cout << "Received: "
+              << std::string_view(buffer.data(), static_cast<std::size_t>(received));
 }
 
 void send_status_line(int socket_fd, std::string_view status_line)
@@ -127,12 +157,17 @@ int main(int argc, char* argv[])
         const std::string_view x = argc >= 3 ? argv[2] : "0";
         const std::string_view y = argc >= 4 ? argv[3] : "0";
         const std::string_view z = argc >= 5 ? argv[4] : "0";
-        const auto status_line = rdvc::make_status_line(device_id, x, y, z);
+        const bool ack_requested = argc >= 6 && std::string_view(argv[5]) == "--ack";
+        const auto status_line =
+            rdvc::make_status_line(device_id, x, y, z, ack_requested);
 
         auto socket = rdvc::connect_to_server();
         rdvc::send_status_line(socket.fd(), status_line);
 
         std::cout << "Sent: " << status_line;
+        if (ack_requested) {
+            rdvc::receive_ack_line(socket.fd());
+        }
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "simulator error: " << error.what() << '\n';

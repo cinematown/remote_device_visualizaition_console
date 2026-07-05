@@ -1,4 +1,6 @@
 #include <array>
+#include <chrono>
+#include <cstdint>
 #include <cerrno>
 #include <csignal>
 #include <cstring>
@@ -252,6 +254,32 @@ std::optional<std::string> take_next_line(std::string& input_buffer)
     return line;
 }
 
+std::uint64_t now_ms()
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
+void send_ack(int client_fd, const DeviceStatus& status)
+{
+    // ACK is the minimal timing hook for the upcoming load generator: each
+    // client can measure send-to-ACK round trip latency per sequence number.
+    std::string ack = "ACK device_id=";
+    ack += status.device_id;
+    ack += " seq=";
+    ack += std::to_string(status.sequence);
+    ack += " server_ms=";
+    ack += std::to_string(now_ms());
+    ack += '\n';
+
+    const ssize_t sent = ::send(client_fd, ack.data(), ack.size(), MSG_NOSIGNAL);
+    if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+        std::cerr << "ack send error for fd " << client_fd << ": "
+                  << std::strerror(errno) << '\n';
+    }
+}
+
 std::optional<DeviceStatus> handle_status_line(
     std::string_view line,
     DeviceStatusStore& status_store)
@@ -278,12 +306,17 @@ std::optional<DeviceStatus> handle_status_line(
 
 void broadcast_status_line(
     const std::unordered_set<int>& telemetry_client_fds,
+    int source_fd,
     std::string_view line)
 {
     // Viewer clients reuse the same TCP server in this phase. Whenever a
     // simulator reports a status, the raw line is forwarded so the Qt worker
     // can parse and visualize it without a new viewer-specific protocol yet.
     for (const int client_fd : telemetry_client_fds) {
+        if (client_fd == source_fd) {
+            continue;
+        }
+
         const ssize_t sent =
             ::send(client_fd, line.data(), line.size(), MSG_NOSIGNAL);
 
@@ -333,9 +366,12 @@ void run_event_loop(int epoll_fd, int listen_fd, MqttBridge& mqtt_bridge)
             while (auto line = take_next_line(input_buffer)) {
                 const auto status = handle_status_line(*line, status_store);
                 if (status.has_value()) {
+                    if (status->ack_requested) {
+                        send_ack(fd, *status);
+                    }
                     mqtt_bridge.publish_status(*status);
                 }
-                broadcast_status_line(telemetry_client_fds, *line);
+                broadcast_status_line(telemetry_client_fds, fd, *line);
             }
 
             if (!still_connected) {

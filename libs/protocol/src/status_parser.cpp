@@ -1,6 +1,7 @@
 #include "rdvc/protocol/status_parser.hpp"
 
 #include <charconv>
+#include <cstdint>
 #include <string>
 
 namespace rdvc {
@@ -22,6 +23,29 @@ bool parse_double(std::string_view value, double& output)
     const auto* last = value.data() + value.size();
     const auto result = std::from_chars(first, last, output);
     return result.ec == std::errc{} && result.ptr == last;
+}
+
+bool parse_u64(std::string_view value, std::uint64_t& output)
+{
+    const auto* first = value.data();
+    const auto* last = value.data() + value.size();
+    const auto result = std::from_chars(first, last, output);
+    return result.ec == std::errc{} && result.ptr == last;
+}
+
+bool parse_bool(std::string_view value, bool& output)
+{
+    if (value == "1" || value == "true") {
+        output = true;
+        return true;
+    }
+
+    if (value == "0" || value == "false") {
+        output = false;
+        return true;
+    }
+
+    return false;
 }
 
 bool assign_field(DeviceStatus& status, std::string_view key, std::string_view value)
@@ -50,6 +74,18 @@ bool assign_field(DeviceStatus& status, std::string_view key, std::string_view v
 
     if (key == "z") {
         return parse_double(value, status.z);
+    }
+
+    if (key == "seq") {
+        return parse_u64(value, status.sequence);
+    }
+
+    if (key == "sent_ms") {
+        return parse_u64(value, status.sent_ms);
+    }
+
+    if (key == "ack") {
+        return parse_bool(value, status.ack_requested);
     }
 
     return true;
