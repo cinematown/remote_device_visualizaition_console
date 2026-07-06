@@ -730,3 +730,44 @@ Expected result:
 
 - The viewer still updates the dashboard labels.
 - The viewer chart shows recent throughput and active connection movement.
+
+## Phase 17 - Loadgen-Backed Fleet Map
+
+Goal:
+
+- Replace the OpenGL-flavored device viewport with a 2D fleet observability map.
+- Show devices created by real `rdvc_loadgen --connections N` TCP connections.
+- Keep load generator sockets receiving ACK lines only while viewer clients receive the corresponding `STATUS` stream.
+
+Implementation notes:
+
+- `apps/viewer/fleet_map_widget.cpp` uses `QWidget` + `QPainter`.
+- The map uses `x` and `y` as top-down position coordinates.
+- Wheel zoom, drag pan, double-click auto-fit, hover, and click selection are supported.
+- Recently updated devices pulse; stale devices fade.
+- `apps/server/main.cpp` now broadcasts `ack=1` `STATUS` lines to registered viewers after sending ACKs to the source client.
+- `QOpenGLWidget` is no longer required by the viewer target.
+
+Run server in terminal 1:
+
+```bash
+./build/rdvc_server
+```
+
+Run viewer from the Ubuntu desktop session:
+
+```bash
+./build/rdvc_viewer
+```
+
+Run load generator in terminal 2:
+
+```bash
+./build/rdvc_loadgen --connections 100 --rate 1000 --duration 10
+```
+
+Expected result:
+
+- Server metrics show real active load generator connections.
+- The viewer table receives `load-0`, `load-1`, and later loadgen device statuses.
+- The fleet map displays those loadgen-backed devices instead of locally generated dummy markers.

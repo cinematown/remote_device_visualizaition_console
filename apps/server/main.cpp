@@ -471,9 +471,8 @@ void run_event_loop(int epoll_fd, int listen_fd, MqttBridge& mqtt_bridge)
                         if (send_ack(fd, *status)) {
                             ++counters.ack_sent;
                         }
-                    } else {
-                        broadcast_to_viewers(viewer_client_fds, fd, *line, counters);
                     }
+                    broadcast_to_viewers(viewer_client_fds, fd, *line, counters);
                     mqtt_bridge.publish_status(*status);
                 }
             }

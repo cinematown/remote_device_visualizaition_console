@@ -4,6 +4,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QSplitter>
 #include <QStandardItem>
 #include <QStandardItemModel>
 #include <QString>
@@ -12,7 +13,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
-#include "device_viewport_widget.hpp"
+#include "fleet_map_widget.hpp"
 #include "metrics_chart_widget.hpp"
 #include "network_worker.hpp"
 #include "rdvc/protocol/server_metrics.hpp"
@@ -67,7 +68,7 @@ int main(int argc, char* argv[])
 
     QWidget window;
     window.setWindowTitle("C++ Remote Device Visualization Console");
-    window.resize(860, 620);
+    window.resize(980, 720);
 
     auto* status_label = new QLabel("Disconnected");
     auto* connect_button = new QPushButton("Connect");
@@ -86,7 +87,7 @@ int main(int argc, char* argv[])
     auto* network_worker = new rdvc::NetworkWorker;
     network_worker->moveToThread(network_thread);
 
-    auto* viewport = new rdvc::DeviceViewportWidget;
+    auto* fleet_map = new rdvc::FleetMapWidget;
     auto* metrics_chart = new rdvc::MetricsChartWidget;
 
     auto* active_metric = new QLabel("Active: 0");
@@ -109,12 +110,17 @@ int main(int argc, char* argv[])
     top_bar->addWidget(status_label);
     top_bar->addStretch();
 
+    auto* main_splitter = new QSplitter(Qt::Vertical);
+    main_splitter->addWidget(fleet_map);
+    main_splitter->addWidget(table);
+    main_splitter->setStretchFactor(0, 3);
+    main_splitter->setStretchFactor(1, 1);
+
     auto* root_layout = new QVBoxLayout;
     root_layout->addLayout(top_bar);
     root_layout->addLayout(metrics_grid);
     root_layout->addWidget(metrics_chart);
-    root_layout->addWidget(table);
-    root_layout->addWidget(viewport);
+    root_layout->addWidget(main_splitter);
     window.setLayout(root_layout);
 
     bool viewer_connected = false;
@@ -157,7 +163,7 @@ int main(int argc, char* argv[])
 
     QObject::connect(network_worker, &rdvc::NetworkWorker::statusReceived, [&](const rdvc::DeviceStatus& status) {
         rdvc::set_device_row(*model, status);
-        viewport->upsertDevice(status);
+        fleet_map->upsertDevice(status);
     });
 
     QObject::connect(network_worker, &rdvc::NetworkWorker::metricsReceived, [&](const QString& metrics_line) {

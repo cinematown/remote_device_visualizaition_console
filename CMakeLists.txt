@@ -6,8 +6,8 @@ project(
     LANGUAGES CXX
 )
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network OpenGLWidgets)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Network OpenGLWidgets)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Network)
 
 find_path(MOSQUITTO_INCLUDE_DIR mosquitto.h)
 find_library(MOSQUITTO_LIBRARY mosquitto)
@@ -59,8 +59,8 @@ rdvc_configure_target(rdvc_loadgen)
 
 add_executable(rdvc_viewer
     apps/viewer/main.cpp
-    apps/viewer/device_viewport_widget.cpp
-    apps/viewer/device_viewport_widget.hpp
+    apps/viewer/fleet_map_widget.cpp
+    apps/viewer/fleet_map_widget.hpp
     apps/viewer/metrics_chart_widget.cpp
     apps/viewer/metrics_chart_widget.hpp
     apps/viewer/network_worker.cpp
@@ -72,7 +72,6 @@ target_link_libraries(
     rdvc_viewer
     PRIVATE
         Qt${QT_VERSION_MAJOR}::Network
-        Qt${QT_VERSION_MAJOR}::OpenGLWidgets
         Qt${QT_VERSION_MAJOR}::Widgets
         rdvc_protocol
 )

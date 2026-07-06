@@ -8,7 +8,7 @@
 - device simulator
 - high-concurrency load generator
 - Qt Widgets viewer
-- OpenGL-based fleet viewport
+- QPainter-based fleet map
 - server metrics dashboard
 - optional MQTT bridge
 
@@ -44,7 +44,7 @@ Current responsibilities:
 - parses `STATUS` lines through `libs/protocol`
 - stores latest device state in `DeviceStatusStore`
 - sends `ACK` for `ack=1` messages
-- broadcasts normal device `STATUS` lines to registered viewer clients
+- broadcasts `STATUS` lines, including loadgen `ack=1` lines, to registered viewer clients
 - streams `METRICS` lines to registered viewer clients
 - publishes status to MQTT when built with `libmosquitto`
 
@@ -107,8 +107,8 @@ Paths:
 - `apps/viewer/main.cpp`
 - `apps/viewer/network_worker.hpp`
 - `apps/viewer/network_worker.cpp`
-- `apps/viewer/device_viewport_widget.hpp`
-- `apps/viewer/device_viewport_widget.cpp`
+- `apps/viewer/fleet_map_widget.hpp`
+- `apps/viewer/fleet_map_widget.cpp`
 - `apps/viewer/metrics_chart_widget.hpp`
 - `apps/viewer/metrics_chart_widget.cpp`
 
@@ -118,7 +118,9 @@ Current viewer features:
 - `QThread` + `NetworkWorker` for socket work
 - sends `HELLO role=viewer` after connecting
 - parses `STATUS` lines into device table
-- displays device markers in a `QOpenGLWidget` viewport
+- displays device markers in a 2D `FleetMapWidget`
+- supports fleet map auto-fit, mouse wheel zoom, drag pan, hover, and selection
+- fades stale devices and pulses recently updated devices
 - parses `METRICS` lines through `libs/protocol`
 - updates dashboard labels
 - draws a time-series chart for `msg_per_sec` and `active`
@@ -228,6 +230,7 @@ Completed major phases:
 - Phase 14: server metrics stdout reporting
 - Phase 15: viewer performance dashboard
 - Phase 16: viewer time-series metrics chart and shared metrics parser
+- Phase 17: QPainter fleet map for loadgen-backed real TCP connection fleets
 
 ## Current Build Commands
 
@@ -287,33 +290,32 @@ mosquitto_sub -h 127.0.0.1 -t 'devices/+/status'
 
 ## Next Suggested Phase
 
-Recommended next step: improve the fleet viewport now that metrics are visible.
+Recommended next step: improve historical inspection now that live fleet state is visible.
 
-Possible Phase 17 options:
+Possible Phase 18 options:
 
-1. Fleet map improvements
-   - make viewport more useful for many devices
-   - color/size markers based on state or update age
-   - add simple pan/zoom or auto-fit
-
-2. Replay/time-machine foundation
+1. Replay/time-machine foundation
    - persist STATUS/METRICS stream to log
    - replay later in viewer
 
-3. Server main.cpp decomposition
+2. Server main.cpp decomposition
    - split connection bookkeeping from the event loop
    - keep `ServerCounters` internal to the server
    - preserve `libs/protocol::ServerMetrics` as the wire snapshot type
 
+3. Fleet map polish
+   - add a visible auto-fit control
+   - link table selection and map selection both ways
+   - show selected device detail fields beside the map
+
 Best immediate next phase:
 
 ```text
-Phase 17 - Fleet Viewport Improvements
+Phase 18 - Replay/Time-Machine Foundation
 ```
 
-Reason: the dashboard now shows both current values and time-series movement.
-The next visible observability win is making the OpenGL fleet map scale better
-for many devices.
+Reason: live observability now has metrics, a time-series chart, and a fleet
+map. Capturing STATUS/METRICS streams would make debugging repeatable.
 
 ## Notes for Next Context
 
