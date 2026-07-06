@@ -1,4 +1,5 @@
 add_library(rdvc_protocol STATIC
+    src/server_metrics.cpp
     src/status_parser.cpp
 )
 

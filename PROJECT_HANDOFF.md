@@ -109,6 +109,8 @@ Paths:
 - `apps/viewer/network_worker.cpp`
 - `apps/viewer/device_viewport_widget.hpp`
 - `apps/viewer/device_viewport_widget.cpp`
+- `apps/viewer/metrics_chart_widget.hpp`
+- `apps/viewer/metrics_chart_widget.cpp`
 
 Current viewer features:
 
@@ -117,7 +119,9 @@ Current viewer features:
 - sends `HELLO role=viewer` after connecting
 - parses `STATUS` lines into device table
 - displays device markers in a `QOpenGLWidget` viewport
-- parses `METRICS` lines and updates dashboard labels
+- parses `METRICS` lines through `libs/protocol`
+- updates dashboard labels
+- draws a time-series chart for `msg_per_sec` and `active`
 
 Dashboard fields:
 
@@ -133,7 +137,9 @@ Dashboard fields:
 Paths:
 
 - `libs/protocol/include/rdvc/protocol/device_status.hpp`
+- `libs/protocol/include/rdvc/protocol/server_metrics.hpp`
 - `libs/protocol/include/rdvc/protocol/status_parser.hpp`
+- `libs/protocol/src/server_metrics.cpp`
 - `libs/protocol/src/status_parser.cpp`
 
 Current `STATUS` format:
@@ -155,6 +161,11 @@ Server metrics stream:
 ```text
 METRICS uptime_sec=<s> active=<n> accepted=<n> disconnected=<n> devices=<n> received=<n> ack_sent=<n> parse_errors=<n> broadcast_errors=<n> msg_per_sec=<n>
 ```
+
+`libs/protocol` now owns the wire-level `ServerMetrics` structure plus
+`format_metrics_line()` and `parse_metrics_line()`. The server keeps its
+internal cumulative counters separately as `ServerCounters` in
+`apps/server/main.cpp`.
 
 ### common
 
@@ -216,11 +227,12 @@ Completed major phases:
 - Phase 13: load generator v2 with `--rate` and `--duration`
 - Phase 14: server metrics stdout reporting
 - Phase 15: viewer performance dashboard
+- Phase 16: viewer time-series metrics chart and shared metrics parser
 
 ## Current Build Commands
 
 ```bash
-cd /home/ryusungwu/share/remote-device-visualization-console
+cd /srv/samba/cpp/remote_device_visualizaition_console
 cmake -S . -B build
 cmake --build build
 ```
@@ -275,36 +287,33 @@ mosquitto_sub -h 127.0.0.1 -t 'devices/+/status'
 
 ## Next Suggested Phase
 
-Recommended next step: improve the viewer observability UI.
+Recommended next step: improve the fleet viewport now that metrics are visible.
 
-Possible Phase 16 options:
+Possible Phase 17 options:
 
-1. Time-series dashboard chart
-   - show `msg_per_sec` over time
-   - show `active` connections over time
-   - keep simple with custom `QWidget`/`QPainter` first
-
-2. Fleet map improvements
+1. Fleet map improvements
    - make viewport more useful for many devices
    - color/size markers based on state or update age
    - add simple pan/zoom or auto-fit
 
-3. Server metrics stream cleanup
-   - introduce a tiny metrics parser/shared type
-   - avoid ad hoc key-value parsing in viewer
-   - possibly move metrics protocol into `libs/protocol`
-
-4. Replay/time-machine foundation
+2. Replay/time-machine foundation
    - persist STATUS/METRICS stream to log
    - replay later in viewer
+
+3. Server main.cpp decomposition
+   - split connection bookkeeping from the event loop
+   - keep `ServerCounters` internal to the server
+   - preserve `libs/protocol::ServerMetrics` as the wire snapshot type
 
 Best immediate next phase:
 
 ```text
-Phase 16 - Viewer Time-Series Metrics Chart
+Phase 17 - Fleet Viewport Improvements
 ```
 
-Reason: server already streams metrics and viewer already receives them. A small chart makes the observability direction visible without introducing new infrastructure.
+Reason: the dashboard now shows both current values and time-series movement.
+The next visible observability win is making the OpenGL fleet map scale better
+for many devices.
 
 ## Notes for Next Context
 

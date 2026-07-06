@@ -711,3 +711,22 @@ Expected result:
 
 - The viewer dashboard updates `Active`, `Msg/s`, `Devices`, `Received`, `ACK`, and `Errors`.
 - Load generator sockets receive ACK lines only; dashboard metrics are sent only to registered viewer clients.
+
+## Phase 16 - Viewer Time-Series Metrics Chart
+
+Goal:
+
+- Move `METRICS` line formatting/parsing into `libs/protocol`.
+- Keep server-side cumulative counters internal to `rdvc_server`.
+- Draw recent `Msg/s` and `Active` samples in the Qt viewer.
+
+Implementation notes:
+
+- `libs/protocol::ServerMetrics` represents the wire-level metrics snapshot.
+- `apps/server/main.cpp` keeps internal `ServerCounters` and formats snapshots through `format_metrics_line()`.
+- `apps/viewer/metrics_chart_widget.cpp` uses `QWidget` + `QPainter` and keeps the latest 60 samples.
+
+Expected result:
+
+- The viewer still updates the dashboard labels.
+- The viewer chart shows recent throughput and active connection movement.

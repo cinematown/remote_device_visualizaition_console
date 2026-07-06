@@ -13,24 +13,18 @@
 #include <QWidget>
 
 #include "device_viewport_widget.hpp"
+#include "metrics_chart_widget.hpp"
 #include "network_worker.hpp"
+#include "rdvc/protocol/server_metrics.hpp"
 
 namespace rdvc {
 
 constexpr auto kServerHost = "127.0.0.1";
 constexpr quint16 kServerPort = 5000;
 
-QString metric_value(const QString& metrics_line, const QString& key)
+QString metric_number(std::uint64_t value)
 {
-    const auto tokens = metrics_line.simplified().split(' ');
-    const auto prefix = key + "=";
-    for (const auto& token : tokens) {
-        if (token.startsWith(prefix)) {
-            return token.mid(prefix.size());
-        }
-    }
-
-    return "0";
+    return QString::number(static_cast<qulonglong>(value));
 }
 
 void set_metric_label(QLabel& label, const QString& name, const QString& value)
@@ -73,7 +67,7 @@ int main(int argc, char* argv[])
 
     QWidget window;
     window.setWindowTitle("C++ Remote Device Visualization Console");
-    window.resize(760, 420);
+    window.resize(860, 620);
 
     auto* status_label = new QLabel("Disconnected");
     auto* connect_button = new QPushButton("Connect");
@@ -93,6 +87,7 @@ int main(int argc, char* argv[])
     network_worker->moveToThread(network_thread);
 
     auto* viewport = new rdvc::DeviceViewportWidget;
+    auto* metrics_chart = new rdvc::MetricsChartWidget;
 
     auto* active_metric = new QLabel("Active: 0");
     auto* msg_rate_metric = new QLabel("Msg/s: 0");
@@ -117,6 +112,7 @@ int main(int argc, char* argv[])
     auto* root_layout = new QVBoxLayout;
     root_layout->addLayout(top_bar);
     root_layout->addLayout(metrics_grid);
+    root_layout->addWidget(metrics_chart);
     root_layout->addWidget(table);
     root_layout->addWidget(viewport);
     window.setLayout(root_layout);
@@ -165,15 +161,22 @@ int main(int argc, char* argv[])
     });
 
     QObject::connect(network_worker, &rdvc::NetworkWorker::metricsReceived, [&](const QString& metrics_line) {
-        rdvc::set_metric_label(*active_metric, "Active", rdvc::metric_value(metrics_line, "active"));
-        rdvc::set_metric_label(*msg_rate_metric, "Msg/s", rdvc::metric_value(metrics_line, "msg_per_sec"));
-        rdvc::set_metric_label(*devices_metric, "Devices", rdvc::metric_value(metrics_line, "devices"));
-        rdvc::set_metric_label(*received_metric, "Received", rdvc::metric_value(metrics_line, "received"));
-        rdvc::set_metric_label(*ack_metric, "ACK", rdvc::metric_value(metrics_line, "ack_sent"));
+        const auto metrics = rdvc::parse_metrics_line(metrics_line.toStdString());
+        if (!metrics.has_value()) {
+            return;
+        }
 
-        const auto parse_errors = rdvc::metric_value(metrics_line, "parse_errors").toULongLong();
-        const auto broadcast_errors = rdvc::metric_value(metrics_line, "broadcast_errors").toULongLong();
-        rdvc::set_metric_label(*errors_metric, "Errors", QString::number(parse_errors + broadcast_errors));
+        rdvc::set_metric_label(*active_metric, "Active", rdvc::metric_number(metrics->active));
+        rdvc::set_metric_label(*msg_rate_metric, "Msg/s", rdvc::metric_number(metrics->msg_per_sec));
+        rdvc::set_metric_label(*devices_metric, "Devices", rdvc::metric_number(metrics->devices));
+        rdvc::set_metric_label(*received_metric, "Received", rdvc::metric_number(metrics->received));
+        rdvc::set_metric_label(*ack_metric, "ACK", rdvc::metric_number(metrics->ack_sent));
+
+        rdvc::set_metric_label(
+            *errors_metric,
+            "Errors",
+            rdvc::metric_number(metrics->parse_errors + metrics->broadcast_errors));
+        metrics_chart->appendSample(*metrics);
     });
 
     QObject::connect(network_thread, &QThread::finished, network_worker, &QObject::deleteLater);

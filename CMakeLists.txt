@@ -61,6 +61,8 @@ add_executable(rdvc_viewer
     apps/viewer/main.cpp
     apps/viewer/device_viewport_widget.cpp
     apps/viewer/device_viewport_widget.hpp
+    apps/viewer/metrics_chart_widget.cpp
+    apps/viewer/metrics_chart_widget.hpp
     apps/viewer/network_worker.cpp
     apps/viewer/network_worker.hpp
 )
