@@ -12,6 +12,8 @@
 #include <QPainter>
 #include <QPen>
 #include <QRectF>
+#include <QResizeEvent>
+#include <QTimer>
 #include <QToolTip>
 #include <QWheelEvent>
 
@@ -52,11 +54,29 @@ FleetMapWidget::FleetMapWidget(QWidget* parent)
     setMinimumHeight(320);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
+
+    auto* refresh_timer = new QTimer(this);
+    refresh_timer->setInterval(500);
+    connect(refresh_timer, &QTimer::timeout, this, [this]() {
+        if (!devices_by_id_.empty()) {
+            update();
+        }
+    });
+    refresh_timer->start();
 }
 
 void FleetMapWidget::upsertDevice(const DeviceStatus& status)
 {
-    devices_by_id_[status.device_id] = DeviceSnapshot{status, now_ms()};
+    upsertDevices(std::vector<DeviceStatus>{status});
+}
+
+void FleetMapWidget::upsertDevices(const std::vector<DeviceStatus>& statuses)
+{
+    const qint64 seen_ms = now_ms();
+    for (const auto& status : statuses) {
+        devices_by_id_[status.device_id] = DeviceSnapshot{status, seen_ms};
+    }
+
     if (auto_fit_enabled_) {
         updateAutoFit();
     }
@@ -177,7 +197,7 @@ void FleetMapWidget::updateHover(const QPointF& point)
 void FleetMapWidget::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::Antialiasing, devices_by_id_.size() <= 600);
 
     const QRectF bounds = rect();
     const QRectF area = plotArea();
@@ -283,8 +303,11 @@ void FleetMapWidget::mouseMoveEvent(QMouseEvent* event)
         return;
     }
 
+    const auto previous_hover = hovered_device_id_;
     updateHover(event->position());
-    update();
+    if (previous_hover != hovered_device_id_) {
+        update();
+    }
 }
 
 void FleetMapWidget::mouseReleaseEvent(QMouseEvent* event)
@@ -297,6 +320,14 @@ void FleetMapWidget::mouseReleaseEvent(QMouseEvent* event)
 void FleetMapWidget::mouseDoubleClickEvent(QMouseEvent*)
 {
     autoFit();
+}
+
+void FleetMapWidget::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    if (auto_fit_enabled_) {
+        updateAutoFit();
+    }
 }
 
 void FleetMapWidget::wheelEvent(QWheelEvent* event)

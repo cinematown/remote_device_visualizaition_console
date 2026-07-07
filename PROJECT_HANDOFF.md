@@ -118,12 +118,14 @@ Current viewer features:
 - `QThread` + `NetworkWorker` for socket work
 - sends `HELLO role=viewer` after connecting
 - parses `STATUS` lines into device table
+- batches high-rate `STATUS` UI updates every 100ms so loadgen traffic does not swamp the UI thread
 - displays device markers in a 2D `FleetMapWidget`
 - supports fleet map auto-fit, mouse wheel zoom, drag pan, hover, and selection
 - fades stale devices and pulses recently updated devices
 - parses `METRICS` lines through `libs/protocol`
 - updates dashboard labels
-- draws a time-series chart for `msg_per_sec` and `active`
+- draws a labeled time-series chart for `msg_per_sec` and `active`
+- marks table rows as `STALE` when no status update arrives for more than 5 seconds
 
 Dashboard fields:
 
@@ -133,6 +135,16 @@ Dashboard fields:
 - Received
 - ACK
 - Errors
+
+Table fields:
+
+- Device ID
+- State (`STALE` after 5 seconds without a new `STATUS`)
+- Battery
+- X
+- Y
+- Z
+- Age
 
 ### protocol
 
@@ -231,6 +243,7 @@ Completed major phases:
 - Phase 15: viewer performance dashboard
 - Phase 16: viewer time-series metrics chart and shared metrics parser
 - Phase 17: QPainter fleet map for loadgen-backed real TCP connection fleets
+- Phase 17.1: viewer responsiveness pass with batched UI updates, clearer chart labels, and stale table rows
 
 ## Current Build Commands
 
@@ -290,20 +303,26 @@ mosquitto_sub -h 127.0.0.1 -t 'devices/+/status'
 
 ## Next Suggested Phase
 
-Recommended next step: improve historical inspection now that live fleet state is visible.
+Recommended next step: add detailed loadgen/network observability before replay.
 
 Possible Phase 18 options:
 
-1. Replay/time-machine foundation
+1. Loadgen metrics stream
+   - periodically publish loadgen-side throughput and latency percentiles
+   - include p50/p95/p99 ACK RTT, ack/sec, errors, and connection count
+   - server should forward this to registered viewers without mixing it into server-side `METRICS`
+   - viewer can add a second chart for latency percentiles
+
+2. Replay/time-machine foundation
    - persist STATUS/METRICS stream to log
    - replay later in viewer
 
-2. Server main.cpp decomposition
+3. Server main.cpp decomposition
    - split connection bookkeeping from the event loop
    - keep `ServerCounters` internal to the server
    - preserve `libs/protocol::ServerMetrics` as the wire snapshot type
 
-3. Fleet map polish
+4. Fleet map polish
    - add a visible auto-fit control
    - link table selection and map selection both ways
    - show selected device detail fields beside the map
@@ -311,11 +330,13 @@ Possible Phase 18 options:
 Best immediate next phase:
 
 ```text
-Phase 18 - Replay/Time-Machine Foundation
+Phase 18 - Loadgen Metrics Stream
 ```
 
-Reason: live observability now has metrics, a time-series chart, and a fleet
-map. Capturing STATUS/METRICS streams would make debugging repeatable.
+Reason: the current viewer shows server-side facts such as active connections
+and `msg_per_sec`. Client-observed latency percentiles still only exist in
+`rdvc_loadgen`, so detailed network observability needs a loadgen metrics
+protocol before replay work.
 
 ## Notes for Next Context
 

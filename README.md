@@ -771,3 +771,25 @@ Expected result:
 - Server metrics show real active load generator connections.
 - The viewer table receives `load-0`, `load-1`, and later loadgen device statuses.
 - The fleet map displays those loadgen-backed devices instead of locally generated dummy markers.
+
+## Phase 17.1 - Viewer Responsiveness and State Clarity
+
+Goal:
+
+- Keep the viewer responsive under high-rate loadgen traffic.
+- Make chart lines self-explanatory without external explanation.
+- Keep stale devices visible in both the fleet map and the table.
+
+Implementation notes:
+
+- The viewer batches incoming `STATUS` updates every 100ms before updating the table and fleet map.
+- The device table uses a device-id index instead of scanning every row per update.
+- The table now includes an `Age` column and marks rows as `STALE` after 5 seconds without a new status.
+- The fleet map updates stale/fresh visual effects on a timer instead of only when new status arrives.
+- The metrics chart labels the green `Msg/s` line and blue `Active conns` line directly.
+
+Network observability note:
+
+- The current viewer chart uses server-side `METRICS`.
+- ACK RTT latency percentiles are still measured only inside `rdvc_loadgen`.
+- Showing p50/p95/p99 latency in the viewer needs a future loadgen metrics stream.

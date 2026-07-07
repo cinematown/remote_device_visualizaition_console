@@ -1,4 +1,12 @@
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 #include <QApplication>
+#include <QBrush>
+#include <QColor>
+#include <QDateTime>
 #include <QGridLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
@@ -10,6 +18,7 @@
 #include <QString>
 #include <QTableView>
 #include <QThread>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -22,6 +31,13 @@ namespace rdvc {
 
 constexpr auto kServerHost = "127.0.0.1";
 constexpr quint16 kServerPort = 5000;
+constexpr qint64 kTableStaleMs = 5000;
+
+struct TableDeviceInfo {
+    int row = -1;
+    DeviceStatus status;
+    qint64 last_seen_ms = 0;
+};
 
 QString metric_number(std::uint64_t value)
 {
@@ -33,30 +49,86 @@ void set_metric_label(QLabel& label, const QString& name, const QString& value)
     label.setText(QString("%1: %2").arg(name, value));
 }
 
-void set_device_row(QStandardItemModel& model, const DeviceStatus& status)
+qint64 now_ms()
 {
-    // The table is keyed by device_id so later updates replace the existing
-    // row instead of appending duplicate devices.
-    int row = -1;
-    for (int index = 0; index < model.rowCount(); ++index) {
-        const auto* id_item = model.item(index, 0);
-        if (id_item != nullptr && id_item->text().toStdString() == status.device_id) {
-            row = index;
-            break;
-        }
+    return QDateTime::currentMSecsSinceEpoch();
+}
+
+QString age_text(qint64 age_ms)
+{
+    if (age_ms < 1000) {
+        return "now";
     }
 
-    if (row < 0) {
-        row = model.rowCount();
-        model.insertRow(row);
+    return QString("%1s").arg(age_ms / 1000);
+}
+
+QString display_state(const DeviceStatus& status, qint64 age_ms)
+{
+    if (age_ms > kTableStaleMs) {
+        return "STALE";
     }
 
-    model.setItem(row, 0, new QStandardItem(QString::fromStdString(status.device_id)));
-    model.setItem(row, 1, new QStandardItem(QString::fromStdString(status.state)));
-    model.setItem(row, 2, new QStandardItem(QString::number(status.battery_percent)));
-    model.setItem(row, 3, new QStandardItem(QString::number(status.x, 'f', 1)));
-    model.setItem(row, 4, new QStandardItem(QString::number(status.y, 'f', 1)));
-    model.setItem(row, 5, new QStandardItem(QString::number(status.z, 'f', 1)));
+    return QString::fromStdString(status.state);
+}
+
+void set_model_text(
+    QStandardItemModel& model,
+    int row,
+    int column,
+    const QString& text,
+    bool stale)
+{
+    auto* item = model.item(row, column);
+    if (item == nullptr) {
+        item = new QStandardItem;
+        model.setItem(row, column, item);
+    }
+
+    if (item->text() != text) {
+        item->setText(text);
+    }
+
+    item->setForeground(stale ? QBrush(QColor(108, 117, 125)) : QBrush(QColor(32, 33, 36)));
+}
+
+void set_device_row(
+    QStandardItemModel& model,
+    std::unordered_map<std::string, TableDeviceInfo>& table_devices,
+    const DeviceStatus& status,
+    qint64 seen_ms)
+{
+    auto& info = table_devices[status.device_id];
+    if (info.row < 0) {
+        info.row = model.rowCount();
+        model.insertRow(info.row);
+    }
+
+    info.status = status;
+    info.last_seen_ms = seen_ms;
+
+    const bool stale = false;
+    set_model_text(model, info.row, 0, QString::fromStdString(status.device_id), stale);
+    set_model_text(model, info.row, 1, display_state(status, 0), stale);
+    set_model_text(model, info.row, 2, QString::number(status.battery_percent), stale);
+    set_model_text(model, info.row, 3, QString::number(status.x, 'f', 1), stale);
+    set_model_text(model, info.row, 4, QString::number(status.y, 'f', 1), stale);
+    set_model_text(model, info.row, 5, QString::number(status.z, 'f', 1), stale);
+    set_model_text(model, info.row, 6, age_text(0), stale);
+}
+
+void refresh_table_ages(
+    QStandardItemModel& model,
+    std::unordered_map<std::string, TableDeviceInfo>& table_devices)
+{
+    const qint64 current_ms = now_ms();
+    for (auto& [device_id, info] : table_devices) {
+        (void)device_id;
+        const qint64 age_ms = current_ms - info.last_seen_ms;
+        const bool stale = age_ms > kTableStaleMs;
+        set_model_text(model, info.row, 1, display_state(info.status, age_ms), stale);
+        set_model_text(model, info.row, 6, age_text(age_ms), stale);
+    }
 }
 
 } // namespace rdvc
@@ -74,7 +146,7 @@ int main(int argc, char* argv[])
     auto* connect_button = new QPushButton("Connect");
 
     auto* model = new QStandardItemModel(&window);
-    model->setHorizontalHeaderLabels({"Device ID", "State", "Battery", "X", "Y", "Z"});
+    model->setHorizontalHeaderLabels({"Device ID", "State", "Battery", "X", "Y", "Z", "Age"});
 
     auto* table = new QTableView;
     table->setModel(model);
@@ -124,6 +196,37 @@ int main(int argc, char* argv[])
     window.setLayout(root_layout);
 
     bool viewer_connected = false;
+    std::unordered_map<std::string, rdvc::DeviceStatus> pending_statuses;
+    std::unordered_map<std::string, rdvc::TableDeviceInfo> table_devices;
+
+    auto* device_flush_timer = new QTimer(&window);
+    device_flush_timer->setInterval(100);
+    QObject::connect(device_flush_timer, &QTimer::timeout, [&]() {
+        if (pending_statuses.empty()) {
+            return;
+        }
+
+        const qint64 seen_ms = rdvc::now_ms();
+        std::vector<rdvc::DeviceStatus> statuses;
+        statuses.reserve(pending_statuses.size());
+
+        for (const auto& [device_id, status] : pending_statuses) {
+            (void)device_id;
+            rdvc::set_device_row(*model, table_devices, status, seen_ms);
+            statuses.push_back(status);
+        }
+
+        pending_statuses.clear();
+        fleet_map->upsertDevices(statuses);
+    });
+    device_flush_timer->start();
+
+    auto* table_age_timer = new QTimer(&window);
+    table_age_timer->setInterval(1000);
+    QObject::connect(table_age_timer, &QTimer::timeout, [&]() {
+        rdvc::refresh_table_ages(*model, table_devices);
+    });
+    table_age_timer->start();
 
     QObject::connect(connect_button, &QPushButton::clicked, [&]() {
         // UI code now requests actions through queued signal/slot calls. The
@@ -162,8 +265,7 @@ int main(int argc, char* argv[])
     });
 
     QObject::connect(network_worker, &rdvc::NetworkWorker::statusReceived, [&](const rdvc::DeviceStatus& status) {
-        rdvc::set_device_row(*model, status);
-        fleet_map->upsertDevice(status);
+        pending_statuses[status.device_id] = status;
     });
 
     QObject::connect(network_worker, &rdvc::NetworkWorker::metricsReceived, [&](const QString& metrics_line) {

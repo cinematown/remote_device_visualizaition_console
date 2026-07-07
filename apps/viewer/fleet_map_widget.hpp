@@ -3,6 +3,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <QPoint>
 #include <QPointF>
@@ -17,10 +18,12 @@ public:
     explicit FleetMapWidget(QWidget* parent = nullptr);
 
     void upsertDevice(const DeviceStatus& status);
+    void upsertDevices(const std::vector<DeviceStatus>& statuses);
     void autoFit();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
